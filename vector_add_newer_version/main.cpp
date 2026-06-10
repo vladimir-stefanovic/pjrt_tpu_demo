@@ -40,6 +40,9 @@
 
 namespace {
 
+size_t DEFAULT_ROWS = 8;
+size_t DEFAULT_COLS = 128;
+size_t DEFAULT_NUM_INS = 2;
 // ===--------------------------------------------------------------------=== //
 // Error helper
 // ===--------------------------------------------------------------------=== //
@@ -253,13 +256,28 @@ int main(int argc, char** argv) {
     // Scan for the optional --trivial flag (diagnostic only).
     bool trivial = false;
     bool load_blob = false;
+    bool hlo = false;
+    size_t rows = DEFAULT_ROWS;
+    size_t cols = DEFAULT_COLS;
+    size_t num_ins = DEFAULT_NUM_INS;
+
     std::vector<char*> positional;
     for (int i = 1; i < argc; ++i) {
+	std::cout << "parsing arg: " << argv[i] << "\n";
         if (std::strcmp(argv[i], "--trivial") == 0) {
             trivial = true;
         } else if (std::strcmp(argv[i], "--load-blob") == 0) {
             load_blob = true;
-        } else {
+        } else if (std::strcmp(argv[i], "--hlo") == 0) {
+            hlo = true;
+        } else if (std::strncmp(argv[i], "--rows=", 7) == 0) {
+	    rows = std::stoi(&argv[i][7]);
+        } else if (std::strncmp(argv[i], "--cols=", 7) == 0) {
+            cols = std::stoi(&argv[i][7]);
+        } else if (std::strncmp(argv[i], "--num-ins=", 10) == 0) {
+            num_ins = std::stoi(&argv[i][10]);
+	    std::cout << "@@@@@@@@@@@@@ parsed num ins: " << num_ins << std::endl;
+	} else {
             positional.push_back(argv[i]);
         }
     }
@@ -346,13 +364,18 @@ int main(int argc, char** argv) {
             std::cout << "[5] --trivial: using pass-through StableHLO ("
                     << stablehlo.size() << " bytes), ignoring "
                     << mosaic_path << "\n";
-        } else {
+	} else if (hlo) {
+            std::cout << "loading stable hlo;\n";
+	    stablehlo = LoadTextFile(mosaic_path);
+            std::cout << "loaded stable hlo;\n";
+	} else {
             std::string mosaic_text = LoadTextFile(mosaic_path);
             if (mosaic_text.empty()) return 1;
             stablehlo = WrapMosaicInStableHlo(mosaic_text);
             std::cout << "[5] Loaded Mosaic (" << mosaic_text.size()
                     << " bytes) and wrapped into StableHLO ("
                     << stablehlo.size() << " bytes)\n";
+	    std::cout << "stable hlo:\n" << stablehlo << "\n";
         }
     
 
@@ -483,20 +506,30 @@ int main(int argc, char** argv) {
     }
 
     // ---- 7. Prepare host-side inputs ----------------------------------
-    constexpr size_t ROWS = 8;
-    constexpr size_t COLS = 128;
-    constexpr size_t N = ROWS * COLS;  // 1024
+//    constexpr size_t ROWS = 8;
+//    constexpr size_t COLS = 128;
+    /*constexpr*/ size_t N = rows * cols;  // 1024
     std::vector<float> host_lhs(N), host_rhs(N);
     for (size_t i = 0; i < N; ++i) {
         host_lhs[i] = static_cast<float>(i);
         host_rhs[i] = 1.0f;
     }
 
+    std::vector<std::vector<float>> inputs;
+    for (size_t j = 0; j < num_ins; ++j) {
+        std::vector<float> host_input(N);
+        for (size_t i = 0; i < N; ++i) {
+            host_input[i] = static_cast<float>(i+j);
+        }
+	inputs.push_back(host_input);
+
+    }
+
     // ---- 8. Upload inputs to device -----------------------------------
     auto upload = [&](const std::vector<float>& host_data)
         -> PJRT_Buffer* {
-        int64_t dims[] = {static_cast<int64_t>(ROWS),
-                          static_cast<int64_t>(COLS)};
+        int64_t dims[] = {static_cast<int64_t>(rows),
+                          static_cast<int64_t>(cols)};
 
         PJRT_Client_BufferFromHostBuffer_Args args{};
         args.struct_size =
@@ -529,16 +562,36 @@ int main(int argc, char** argv) {
 
     PJRT_Buffer* buf_lhs = upload(host_lhs);
     PJRT_Buffer* buf_rhs = upload(host_rhs);
-    if (buf_lhs == nullptr || buf_rhs == nullptr) return 1;
+
+    std::vector<PJRT_Buffer*> bufs;
+    for (size_t i = 0; i < num_ins; ++i) {
+//        PJRT_Buffer* buf_rhs = upload(host_input[i]);
+
+        bufs.push_back(upload(inputs[i]));
+        if (bufs[i] == nullptr) return 1;
+    }
+
+//    if (buf_lhs == nullptr || buf_rhs == nullptr) return 1;
     std::cout << "[7] Uploaded 2 x " << N << " floats to device\n";
 
     // ---- 9. Execute ---------------------------------------------------
     PJRT_Buffer* output_buffers[1] = {nullptr};
     PJRT_Buffer** output_list = output_buffers;
-    PJRT_Buffer* input_args[2] = {buf_lhs, buf_rhs};
+//    PJRT_Buffer* input_args[2] = {buf_lhs, buf_rhs};
+         //PJRT_Buffer** input_args = &bufs[0];
     // Non-const to match PJRT 0.23 (PJRT_Buffer***); implicit const-adding
     // conversion covers the newer type PJRT_Buffer* const* const*.
+          //PJRT_Buffer** input_list[1] = {input_args};
+//    PJRT_Buffer** input_list = (PJRT_Buffer* const* const*)input_args;
+  //  PJRT_Buffer* const* const* input_list = (PJRT_Buffer* const* const*)input_args;
+
+    //PJRT_Buffer* input_args[2] = {bufs[0], bufs[1]};
+    //PJRT_Buffer** input_list[1] = {input_args};
+    //nw
+    PJRT_Buffer** input_args = &bufs[0];
+    //PJRT_Buffer* const* const* input_list = (PJRT_Buffer* const* const*)input_args;
     PJRT_Buffer** input_list[1] = {input_args};
+
     {
         PJRT_ExecuteOptions exec_options{};
         exec_options.struct_size = PJRT_ExecuteOptions_STRUCT_SIZE;
@@ -550,7 +603,7 @@ int main(int argc, char** argv) {
         exec_args.options = &exec_options;
         exec_args.argument_lists = input_list;
         exec_args.num_devices = 1;
-        exec_args.num_args = 2;
+        exec_args.num_args = num_ins; // 2;
         exec_args.output_lists = &output_list;
         exec_args.device_complete_events = nullptr;
         exec_args.execute_device = nullptr;
@@ -588,11 +641,11 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 8; ++i) {
         std::cout << host_out[i] << " ";
     }
-    std::cout << "\nExpected:\n  ";
-    for (int i = 0; i < 8; ++i) {
-        std::cout << (host_lhs[i] + host_rhs[i]) << " ";
-    }
-    std::cout << "\n";
+//    std::cout << "\nExpected:\n  ";
+//    for (int i = 0; i < 8; ++i) {
+//        std::cout << (host_lhs[i] + host_rhs[i]) << " ";
+//    }
+//    std::cout << "\n";
 
     // ---- 12. Cleanup --------------------------------------------------
     auto destroy_buffer = [&](PJRT_Buffer* buf) {
