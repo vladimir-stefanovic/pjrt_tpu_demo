@@ -246,11 +246,14 @@ void PrintUsage(const char* argv0) {
 int main(int argc, char** argv) {
     // Scan for the optional --trivial flag (diagnostic only).
     bool trivial = false;
+    bool hlo = false;
     std::vector<char*> positional;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--trivial") == 0) {
             trivial = true;
-        } else {
+        } else if (std::strcmp(argv[i], "--hlo") == 0) {
+            hlo = true;
+	} else {
             positional.push_back(argv[i]);
         }
     }
@@ -323,6 +326,10 @@ int main(int argc, char** argv) {
         std::cout << "[5] --trivial: using pass-through StableHLO ("
                   << stablehlo.size() << " bytes), ignoring "
                   << mosaic_path << "\n";
+       } else if (hlo) {
+           std::cout << "loading stable hlo;\n";
+           stablehlo = LoadTextFile(mosaic_path);
+           std::cout << "loaded stable hlo;\n";
     } else {
         std::string mosaic_text = LoadTextFile(mosaic_path);
         if (mosaic_text.empty()) return 1;
